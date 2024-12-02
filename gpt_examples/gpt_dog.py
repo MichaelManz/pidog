@@ -24,6 +24,8 @@ with_img = True
 args = sys.argv[1:]
 if '--keyboard' in args:
     input_mode = 'keyboard'
+elif '--image' in args:
+    input_mode = 'image'
 else:
     input_mode = 'voice'
 
@@ -32,11 +34,12 @@ if '--no-img' in args:
 else:
     with_img = True
 
+
 # openai assistant init
 # =================================================================
 openai_helper = OpenAiHelper(OPENAI_API_KEY, OPENAI_ASSISTANT_ID, 'PiDog')
 
-LANGUAGE = []
+LANGUAGE = ['en']
 # LANGUAGE = ['zh', 'en'] # config stt language code, https://en.wikipedia.org/wiki/List_of_ISO_639_language_codes
 
 # VOLUME_DB = 5
@@ -221,100 +224,127 @@ def main():
 
             my_dog.rgb_strip.set_mode('boom', 'yellow', 0.5)
 
+        elif input_mode == 'image':
+            with action_lock:
+                action_state = 'standby'
+            my_dog.rgb_strip.set_mode('listen', 'cyan', 1)
+
+            time.sleep(0.1)
+            _result = 'What do you see? Do react accordingly'
+
+            my_dog.rgb_strip.set_mode('boom', 'yellow', 0.5)
+
         else:
             raise ValueError("Invalid input mode")
 
-        # chat-gpt
-        # ---------------------------------------------------------------- 
-        response = {}
-        # response = openai_helper.dialogue(_result)
+        done = False
+        while not done:
+            # chat-gpt
+            # ---------------------------------------------------------------- 
+            response = {}
+            
 
-        img_path = './img_imput.jpg'
-        cv2.imwrite(img_path, Vilib.img)
-
-        with action_lock:
-            action_state = 'think'
-
-        st = time.time()
-        response = openai_helper.dialogue_with_img(_result, img_path)
-        gray_print(f'chat takes: {time.time() - st:.3f} s')
-
-        # actions & TTS
-        # ---------------------------------------------------------------- 
-        try:
-            if isinstance(response, dict):
-                if 'actions' in response:
-                    actions = list(response['actions'])
-                else:
-                    actions = ['stop']
-
-                if 'answer' in response:
-                    answer = response['answer']
-                else:
-                    answer = ''
-
-                if len(answer) > 0:
-                    _actions = list.copy(actions)
-                    for _action in _actions:
-                        if _action in VOICE_ACTIONS:
-                            actions.remove(_action)
-            else:
-                response = str(response)
-                if len(response) > 0:
-                    actions = ['stop']
-                    answer = response
-
-        except:
-            actions = ['stop']
-            answer = ''
-    
-        try:
-            # ---- tts ----
-            _status = False
-            if answer != '':
-                st = time.time()
-                _time = time.strftime("%y-%m-%d_%H-%M-%S", time.localtime())
-                _tts_f = f"./tts/{_time}_raw.wav"
-                _status = openai_helper.text_to_speech(answer, _tts_f, TTS_VOICE, response_format='wav') # onyx
-                if _status:
-                    tts_file = f"./tts/{_time}_{VOLUME_DB}dB.wav"
-                    _status = sox_volume(_tts_f, tts_file, VOLUME_DB)
-                gray_print(f'tts takes: {time.time() - st:.3f} s')
-
-                if _status:
-                    with speech_lock:
-                        speech_loaded = True
-                    my_dog.rgb_strip.set_mode('speak', 'pink', 1)
-            else:
-                my_dog.rgb_strip.set_mode('breath', 'blue', 1)
-
-            # ---- actions ----
             with action_lock:
-                actions_to_be_done = actions
-                gray_print(f'actions: {actions_to_be_done}')
-                action_state = 'actions'
+                action_state = 'think'
 
-            # ---- wait speak done ----
-            if _status:
+            st = time.time()
+
+            if with_img:
+                img_path = './img_imput.jpg'
+                cv2.imwrite(img_path, Vilib.img)
+                response = openai_helper.dialogue_with_img(_result, img_path)
+            else:
+                response = openai_helper.dialogue(_result)
+          
+            gray_print(f'chat takes: {time.time() - st:.3f} s')
+
+            # actions & TTS
+            # ---------------------------------------------------------------- 
+            try:
+                if isinstance(response, dict):
+                    if 'actions' in response:
+                        actions = list(response['actions'])
+                    else:
+                        actions = ['stop']
+
+                    if 'answer' in response:
+                        answer = response['answer']
+                    else:
+                        answer = ''
+
+                    if 'followup' in response:
+                        followup = response['followup'] == 'true'
+                        gray_print("Follow up value " + response['followup'])
+                    else:
+                        followup = False
+                    
+                    done = not followup
+                    if followup:
+                        gray_print("Following up")
+                        _result = "follow up as requested, see if goal was achieved or more actions needed"
+
+                    if len(answer) > 0:
+                        _actions = list.copy(actions)
+                        for _action in _actions:
+                            if _action in VOICE_ACTIONS:
+                                actions.remove(_action)
+                else:
+                    response = str(response)
+                    if len(response) > 0:
+                        actions = ['stop']
+                        answer = response
+
+            except:
+                actions = ['stop']
+                answer = ''
+    
+            try:
+                # ---- tts ----
+                _status = False
+                if answer != '':
+                    st = time.time()
+                    _time = time.strftime("%y-%m-%d_%H-%M-%S", time.localtime())
+                    _tts_f = f"./tts/{_time}_raw.wav"
+                    _status = openai_helper.text_to_speech(answer, _tts_f, TTS_VOICE, response_format='wav') # onyx
+                    if _status:
+                        tts_file = f"./tts/{_time}_{VOLUME_DB}dB.wav"
+                        _status = sox_volume(_tts_f, tts_file, VOLUME_DB)
+                    gray_print(f'tts takes: {time.time() - st:.3f} s')
+
+                    if _status:
+                        with speech_lock:
+                            speech_loaded = True
+                        my_dog.rgb_strip.set_mode('speak', 'pink', 1)
+                else:
+                    my_dog.rgb_strip.set_mode('breath', 'blue', 1)
+
+                # ---- actions ----
+                with action_lock:
+                    actions_to_be_done = actions
+                    gray_print(f'actions: {actions_to_be_done}')
+                    action_state = 'actions'
+
+                # ---- wait speak done ----
+                if _status:
+                    while True:
+                        with speech_lock:
+                            if not speech_loaded:
+                                break
+                        time.sleep(.01)
+
+
+                # ---- wait actions done ----
                 while True:
-                    with speech_lock:
-                        if not speech_loaded:
+                    with action_lock:
+                        if action_state != 'actions':
                             break
                     time.sleep(.01)
 
+                ##
+                print() # new line
 
-            # ---- wait actions done ----
-            while True:
-                with action_lock:
-                    if action_state != 'actions':
-                        break
-                time.sleep(.01)
-
-            ##
-            print() # new line
-
-        except Exception as e:
-            print(f'actions or TTS error: {e}')
+            except Exception as e:
+                print(f'actions or TTS error: {e}')
 
 
 if __name__ == "__main__":

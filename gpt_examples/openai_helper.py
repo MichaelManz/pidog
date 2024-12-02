@@ -1,7 +1,16 @@
+import base64
+import json
 from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.load.load import load
+
 import time
 import shutil
 import os
+
+import yaml
 
 # utils
 # =================================================================
@@ -55,7 +64,14 @@ class OpenAiHelper():
         self.assistant_id = assistant_id
         self.assistant_name = assistant_name
 
-
+        self.llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini")
+        with open("langchain_prompt.yml", "r") as f:
+            self.prompt = load(yaml.safe_load(f))
+        output_parser = StrOutputParser()
+        self.chain = self.prompt | self.llm | output_parser
+        
+        
+        
         self.client = OpenAI(api_key=api_key, timeout=timeout)
         self.thread = self.client.beta.threads.create()
         self.run = self.client.beta.threads.runs.create_and_poll(
@@ -120,85 +136,29 @@ class OpenAiHelper():
 
     def dialogue(self, msg):
         chat_print("user", msg)
-        message = self.client.beta.threads.messages.create(
-            thread_id=self.thread.id,
-            role="user",
-            content=msg
-            )
-        run = self.client.beta.threads.runs.create_and_poll(
-            thread_id=self.thread.id,
-            assistant_id=self.assistant_id,
-        )
-        if run.status == 'completed': 
-            messages = self.client.beta.threads.messages.list(
-                thread_id=self.thread.id
-            )
+        self.chain.invoke({"input": msg})
 
-            for message in messages.data:
-                if message.role == 'assistant':
-                    for block in message.content:
-                        if block.type == 'text':
-                            value = block.text.value
-                            chat_print(self.assistant_name, value)
-                            try:
-                                value = eval(value) # convert to dict
-                                return value
-                            except Exception as e:
-                                return str(value)
-                break # only last reply
-        else:
-            print(run.status)
-
+        chat_print(self.assistant_name, value)
+        try:
+            value = eval(value) # convert to dict
+            return value
+        except Exception as e:
+            return str(value)
 
     def dialogue_with_img(self, msg, img_path):
         chat_print(f"user", msg)
 
-        img_file = self.client.files.create(
-                    file=open(img_path, "rb"),
-                    purpose="vision"
-                )
-
-        message =  self.client.beta.threads.messages.create(
-            thread_id= self.thread.id,
-            role="user",
-            content= [
-                {
-                    "type": "text",
-                    "text": msg
-                },
-                # {
-                # "type": "image_url",
-                # "image_url": {"url": "https://example.com/image.png"}
-                # },
-                {
-                    "type": "image_file",
-                    "image_file": {"file_id": img_file.id}
-                }
-            ],
-            )
-        run = self.client.beta.threads.runs.create_and_poll(
-            thread_id=self.thread.id,
-            assistant_id=self.assistant_id,
-        )
-        if run.status == 'completed': 
-            messages = self.client.beta.threads.messages.list(
-                thread_id=self.thread.id
-            )
-
-            for message in messages.data:
-                if message.role == 'assistant':
-                    for block in message.content:
-                        if block.type == 'text':
-                            value = block.text.value
-                            chat_print(self.assistant_name, value)
-                            try:
-                                value = eval(value) # convert to dict
-                                return value
-                            except Exception as e:
-                                return str(value)
-                break # only last reply
-        else:
-            print(run.status)
+        with open(img_path, "rb") as image_file:
+            image_data = base64.b64encode(image_file.read()).decode("utf-8")
+        
+        value = self.chain.invoke({"input": msg, "image_data": image_data})
+        
+        chat_print(self.assistant_name, value)
+        try:
+            value = eval(value) # convert to dict
+            return value
+        except Exception as e:
+            return str(value)
 
 
     def text_to_speech(self, text, output_file, voice='alloy', response_format="mp3", speed=1):
@@ -228,3 +188,28 @@ class OpenAiHelper():
             print(f'tts err: {e}')
             return False
 
+def main():
+    """ Main program """
+    from langchain_core.load import dumpd
+    prompt = ChatPromptTemplate(
+    [
+        ("system", "system message is {system_message}"),
+        ("user", [
+                {"type": "text", "text": "{input}"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,{image_data}"}, "optional": "True"},
+        ]),
+    ]
+    )
+
+    with open("foo.yml", "w") as f:
+        yaml.dump(dumpd(prompt), f)
+
+    with open("foo.yml", "r") as f:
+        reloaded = load(yaml.safe_load(f))
+        
+    print(reloaded)
+    return 0
+
+if __name__ == "__main__":
+    main()
+       

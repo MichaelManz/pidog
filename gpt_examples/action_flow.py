@@ -177,7 +177,7 @@ class ActionFlow():
 
     def run(self, action):
         try:
-            # print(f'run: {action}')
+            print(f'run: {action}')
             if action in self.OPERATIONS:
                 operation = self.OPERATIONS[action]
                 # status

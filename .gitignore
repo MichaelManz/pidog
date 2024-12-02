@@ -4,3 +4,9 @@ photo
 test/photo*
 test/scene/*
 backups/*
+build/*
+*pycache*
+gpt_examples/tts
+*egg-info*
+dist/*
+keys.py
