@@ -1,10 +1,19 @@
 import base64
 import json
+
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_deepseek import ChatDeepSeek
+from langgraph.prebuilt import create_react_agent
+from typing import TypedDict, Annotated
+from langchain_core.messages import BaseMessage
+from langgraph.graph import add_messages
+from langgraph.managed import IsLastStep, RemainingSteps
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.load.load import load
+from keys import OPENAI_API_KEY, OPENAI_ASSISTANT_ID, GEMINI_API_KEY, DEEPSEEK_API_KEY
 
 import time
 import shutil
@@ -14,70 +23,36 @@ import yaml
 
 # utils
 # =================================================================
-def chat_print(label, message):
-    width = shutil.get_terminal_size().columns
-    msg_len = len(message)
-    line_len = width - 27
+def chat_print(label, stream):
+    for event in stream:
+        print(event)
+        
 
-    # --- normal print ---
-    print(f'{time.time():.3f} {label:>6} >>> {message}')
-    return
-
-    # --- table mode ---
-    if width < 38 or msg_len <= line_len:
-        print(f'{time.time():.3f} {label:>6} >>> {message}')
-    else:
-        texts = []
-
-        # words = message.split()
-        # print(words)
-        # current_line = ""
-        # for word in words:
-        #     if len(current_line) + len(word) + 1 <= line_len:
-        #         current_line += word + " "
-        #     else:
-        #         texts.append(current_line)
-        #         current_line = ""
-
-        # if current_line:
-        #     texts.append(current_line)
-
-        for i in range(0, len(message), line_len):
-            texts.append(message[i:i+line_len])
-
-        for i, text in enumerate(texts):
-            if i == 0:
-                print(f'{time.time():.3f} {label:>6} >>> {text}')
-            else:
-                print(f'{"":>26} {text}')
-
-# OpenAiHelper
+# ModelHelper
 # =================================================================
-class OpenAiHelper():
+class ModelHelper():
     STT_OUT = "stt_output.wav"
     TTS_OUTPUT_FILE = 'tts_output.mp3'
     TIMEOUT = 30 # seconds
 
-    def __init__(self, api_key, assistant_id, assistant_name, timeout=TIMEOUT) -> None:
+    def __init__(self, llm, tools, timeout=TIMEOUT) -> None:
+        self.assistant_name = "PiDog"
 
-        self.api_key = api_key
-        self.assistant_id = assistant_id
-        self.assistant_name = assistant_name
-
-        self.llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini")
+        self.llm = llm
         with open("langchain_prompt.yml", "r") as f:
             self.prompt = load(yaml.safe_load(f))
         output_parser = StrOutputParser()
         self.chain = self.prompt | self.llm | output_parser
         
-        
-        
-        self.client = OpenAI(api_key=api_key, timeout=timeout)
-        self.thread = self.client.beta.threads.create()
-        self.run = self.client.beta.threads.runs.create_and_poll(
-            thread_id=self.thread.id,
-            assistant_id=assistant_id,
-        )
+        class CustomState(TypedDict):
+            input: str
+            image_data: str
+            messages: Annotated[list[BaseMessage], add_messages]
+            is_last_step: IsLastStep
+            remaining_steps: RemainingSteps
+        # Construct the ReAct agent
+        self.graph = create_react_agent(model=self.llm, tools=tools, state_schema=CustomState, prompt=self.prompt)
+
 
     def stt(self, audio, language='en'):
         try:
@@ -136,14 +111,8 @@ class OpenAiHelper():
 
     def dialogue(self, msg):
         chat_print("user", msg)
-        value = self.chain.invoke({"input": msg})
-
-        # Check if value is an array/list
-        if isinstance(value, list):
-            print(f"Value is an array with {len(value)} items")
-            # Process each item in the array
-            for i, item in enumerate(value):
-                print(f"Item {i}: {type(item)} - {item}")
+        value = self.graph.stream(inputs={"input": msg}, stream_mode="values")
+        # self.chain.invoke({"input": msg})
 
         chat_print(self.assistant_name, value)
         try:
@@ -158,16 +127,14 @@ class OpenAiHelper():
         with open(img_path, "rb") as image_file:
             image_data = base64.b64encode(image_file.read()).decode("utf-8")
         
-        value = self.chain.invoke({"input": msg, "image_data": image_data})
-        
-        # Check if value is an array/list
-        if isinstance(value, list):
-            print(f"Value is an array with {len(value)} items")
-            # Process each item in the array
-            for i, item in enumerate(value):
-                print(f"Item {i}: {type(item)} - {item}")
-        
-        chat_print(self.assistant_name, value)
+        inputs = {"messages": [("user", msg)], "input": msg, "image_data": image_data}
+        for s in self.graph.stream(inputs, stream_mode="values"):
+            message = s["messages"][-1]
+            if isinstance(message, tuple):
+                print(message)
+            else:
+                value = message.pretty_print()
+
         try:
             value = eval(value) # convert to dict
             return value
@@ -188,14 +155,7 @@ class OpenAiHelper():
                 raise FileExistsError(f"\'{dir}\' is not a directory")
 
             # tts
-            with self.client.audio.speech.with_streaming_response.create(
-                model="tts-1",
-                voice=voice,
-                input=text,
-                response_format=response_format,
-                speed=speed,
-            ) as response:
-                response.stream_to_file(output_file)
+            #TODO: Implement TTS
 
             return True
         except Exception as e:
@@ -204,26 +164,35 @@ class OpenAiHelper():
 
 def main():
     """ Main program """
-    from langchain_core.load import dumpd
-    prompt = ChatPromptTemplate(
-    [
-        ("system", "system message is {system_message}"),
-        ("user", [
-                {"type": "text", "text": "{input}"},
-                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,{image_data}"}, "optional": "True"},
-        ]),
-    ]
-    )
+    from action_flow_tool import ActionFlowTool
+    from model_helper import ModelHelper
+    from keys import OPENAI_API_KEY, OPENAI_ASSISTANT_ID, GEMINI_API_KEY
+    from action_flow import ActionFlow
+    from pidog import Pidog
+    # dog init 
+    # =================================================================
+    try:
+        #my_dog = Pidog()
+        my_dog = None
+        time.sleep(1)
+    except Exception as e:
+        raise RuntimeError(e)
 
-    with open("foo.yml", "w") as f:
-        yaml.dump(dumpd(prompt), f)
+    action_flow = ActionFlow(my_dog)
 
-    with open("foo.yml", "r") as f:
-        reloaded = load(yaml.safe_load(f))
-        
-    print(reloaded)
+    tools = [ActionFlowTool(action_flow, action) for action in action_flow.OPERATIONS]
+
+    # assistant init
+    # =================================================================
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash",  temperature=0,max_tokens=None, timeout=None, max_retries=2,google_api_key=GEMINI_API_KEY)
+    #llm = ChatDeepSeek(api_key=DEEPSEEK_API_KEY, model="deepseek-chat",)
+    #llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini")
+    model_helper = ModelHelper(llm, tools)
+    model_helper.dialogue_with_img("What is this image?", "img_imput.jpg")
+    
     return 0
+
+
 
 if __name__ == "__main__":
     main()
-       
