@@ -56,7 +56,7 @@ class ModelHelper():
             robot_status: str = "standby"  # standby, thinking, performing_action
 
         # Construct the ReAct agent
-        self.graph = create_react_agent(model=self.llm, tools=dog_tools, prompt=self.prompt, debug=True)
+        self.graph = create_react_agent(model=self.llm, tools=dog_tools, prompt=self.prompt, debug=False)
 
 
     def stt(self, audio, language='en'):
@@ -141,6 +141,7 @@ class ModelHelper():
                 ]
             )
         
+        final_response = None
         for s in self.graph.stream({"messages": [message]}, stream_mode="values"):
             # Some events may not contain 'messages' (e.g., tool invocation)
             if "messages" not in s or not s["messages"]:
@@ -151,13 +152,32 @@ class ModelHelper():
             if isinstance(message, tuple):
                 print(message)
             else:
-                value = message.pretty_print()
+                # Handle different content formats
+                if hasattr(message, 'content'):
+                    if isinstance(message.content, list):
+                        # Content is a list of content blocks
+                        for content_block in message.content:
+                            if isinstance(content_block, dict) and content_block.get("type") == "text":
+                                print(content_block["text"])
+                            elif isinstance(content_block, list):
+                                print(content_block[0])
+                            elif isinstance(content_block, str):
+                                print(content_block)
+                    elif isinstance(message.content, str):
+                        # Content is a simple string
+                        print(message.content)
+                    else:
+                        print(str(message.content))
+                else:
+                    print(str(message))
+            
+            final_response = s
 
-        try:
-            value = s["messages"][-1].content # convert to dict
-            return value
+        try:  
+            return ""
         except Exception as e:
-            return str(value)
+            print(f"Error extracting response: {e}")
+            return ""
 
 
     def text_to_speech(self, text, output_file, voice='alloy', response_format="mp3", speed=1):
@@ -214,7 +234,7 @@ def main():
     #llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini")
     model_helper = ModelHelper(llm, tools)
     img_path = camera_handler.capture_image()
-    model_helper.dialogue_with_img("Bark until you see a person in the camera", img_path)
+    model_helper.dialogue_with_img("Repeatedly wag the tail until you do not see a person. Give a high five when you see a person. Explain what you see", img_path)
     return 0
 
 

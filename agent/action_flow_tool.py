@@ -112,8 +112,12 @@ class ActionFlowTool(BaseTool):
         msg = f"Executed dog action {self.action}"
         if camera_handler and camera_handler.is_started:
             try:
-                image_data = camera_handler.get_image_base64('./img_input.jpg')
-                return msg, f"data:image/jpeg;base64,{image_data}"
+                img_path = camera_handler.capture_image()
+                image_data = camera_handler.get_image_base64(img_path)
+                return msg, {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                    }
             except Exception as e:
                 print(f"Camera capture error: {e}")
                 return f"{msg} (camera capture failed)"
