@@ -7,12 +7,15 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_deepseek import ChatDeepSeek
 from langgraph.prebuilt import create_react_agent
 from typing import TypedDict, Annotated
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import add_messages
 from langgraph.managed import IsLastStep, RemainingSteps
-from langchain_core.prompts import ChatPromptTemplate
+from langgraph.graph import MessagesState
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.load.load import load
+from action_flow_tool import set_camera_handler
+from camera_handler import CameraHandler
 from keys import OPENAI_API_KEY, OPENAI_ASSISTANT_ID, GEMINI_API_KEY, DEEPSEEK_API_KEY
 
 import time
@@ -35,23 +38,25 @@ class ModelHelper():
     TTS_OUTPUT_FILE = 'tts_output.mp3'
     TIMEOUT = 30 # seconds
 
-    def __init__(self, llm, tools, timeout=TIMEOUT) -> None:
+    def __init__(self, llm, dog_tools, timeout=TIMEOUT) -> None:
         self.assistant_name = "PiDog"
 
         self.llm = llm
-        with open("langchain_prompt.yml", "r") as f:
-            self.prompt = load(yaml.safe_load(f))
-        output_parser = StrOutputParser()
-        self.chain = self.prompt | self.llm | output_parser
         
-        class CustomState(TypedDict):
-            input: str
-            image_data: str
-            messages: Annotated[list[BaseMessage], add_messages]
-            is_last_step: IsLastStep
-            remaining_steps: RemainingSteps
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a mechanical dog with powerful AI capabilities, similar to JARVIS from Iron Man. Your name is Pidog. You can have conversations with people and perform actions based on the context of the conversation. You have access to visual input with a camera."),
+            ("placeholder", "{messages}"),
+            ("user", "Remember, always be polite!"),
+        ])
+        
+        class CustomState(MessagesState):
+            image_data: str = ""
+            current_action: str = ""
+            action_timestamp: float = 0.0
+            robot_status: str = "standby"  # standby, thinking, performing_action
+
         # Construct the ReAct agent
-        self.graph = create_react_agent(model=self.llm, tools=tools, state_schema=CustomState, prompt=self.prompt)
+        self.graph = create_react_agent(model=self.llm, tools=dog_tools, prompt=self.prompt, debug=True)
 
 
     def stt(self, audio, language='en'):
@@ -122,13 +127,26 @@ class ModelHelper():
             return str(value)
 
     def dialogue_with_img(self, msg, img_path):
-        chat_print(f"user", msg)
 
         with open(img_path, "rb") as image_file:
             image_data = base64.b64encode(image_file.read()).decode("utf-8")
         
-        inputs = {"messages": [("user", msg)], "input": msg, "image_data": image_data}
-        for s in self.graph.stream(inputs, stream_mode="values"):
+        message = HumanMessage(
+                content=[
+                    {"type": "text", "text": msg},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                    },
+                ]
+            )
+        
+        for s in self.graph.stream({"messages": [message]}, stream_mode="values"):
+            # Some events may not contain 'messages' (e.g., tool invocation)
+            if "messages" not in s or not s["messages"]:
+                print(s)  # debug fallback
+                continue
+
             message = s["messages"][-1]
             if isinstance(message, tuple):
                 print(message)
@@ -136,7 +154,7 @@ class ModelHelper():
                 value = message.pretty_print()
 
         try:
-            value = eval(value) # convert to dict
+            value = s["messages"][-1].content # convert to dict
             return value
         except Exception as e:
             return str(value)
@@ -163,12 +181,15 @@ class ModelHelper():
             return False
 
 def main():
+            
     """ Main program """
     from action_flow_tool import ActionFlowTool
     from model_helper import ModelHelper
     from keys import OPENAI_API_KEY, OPENAI_ASSISTANT_ID, GEMINI_API_KEY
     from action_flow import ActionFlow
     from pidog import Pidog
+    from pydantic import BaseModel, Field
+
     # dog init 
     # =================================================================
     try:
@@ -177,6 +198,10 @@ def main():
         time.sleep(1)
     except Exception as e:
         raise RuntimeError(e)
+    
+    camera_handler = CameraHandler()
+    set_camera_handler(camera_handler)  # Set global camera handler
+    camera_handler.start()
 
     action_flow = ActionFlow(my_dog)
 
@@ -188,8 +213,8 @@ def main():
     #llm = ChatDeepSeek(api_key=DEEPSEEK_API_KEY, model="deepseek-chat",)
     #llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini")
     model_helper = ModelHelper(llm, tools)
-    model_helper.dialogue_with_img("What is this image?", "img_imput.jpg")
-    
+    img_path = camera_handler.capture_image()
+    model_helper.dialogue_with_img("Bark until you see a person in the camera", img_path)
     return 0
 
 
