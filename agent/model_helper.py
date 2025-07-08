@@ -1,5 +1,8 @@
 import base64
 import json
+import logging
+import time
+from datetime import datetime
 
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
@@ -17,12 +20,16 @@ from langchain_core.load.load import load
 from action_flow_tool import set_camera_handler
 from camera_handler import CameraHandler
 from keys import OPENAI_API_KEY, OPENAI_ASSISTANT_ID, GEMINI_API_KEY, DEEPSEEK_API_KEY
-
+from logging_config import setup_logging, get_logger, truncate_at_base64
 import time
 import shutil
 import os
 
 import yaml
+
+# Configure logging
+setup_logging(log_file='langgraph_debug.log')
+logger = get_logger(__name__)
 
 # utils
 # =================================================================
@@ -30,6 +37,7 @@ def chat_print(label, stream):
     for event in stream:
         print(event)
         
+
 
 # ModelHelper
 # =================================================================
@@ -46,17 +54,45 @@ class ModelHelper():
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", "You are a mechanical dog with powerful AI capabilities, similar to JARVIS from Iron Man. Your name is Pidog. You can have conversations with people and perform actions based on the context of the conversation. You have access to visual input with a camera."),
             ("placeholder", "{messages}"),
-            ("user", "Remember, always be polite!"),
+            ("user", ""),
         ])
         
         class CustomState(MessagesState):
             image_data: str = ""
             current_action: str = ""
             action_timestamp: float = 0.0
-            robot_status: str = "standby"  # standby, thinking, performing_action
-
+            
+        # This function will be called every time before the node that calls LLM
+        def pre_model_hook(state):
+            logger.info(f"=== Pre-model Hook Called ===")
+            
+            # Log incoming messages count
+            messages = state.get("messages", [])
+            logger.info(f"Incoming messages count: {len(messages)}")
+            
+            # Get the message to return (last one)
+            if messages:
+                returned_message = messages[-1]
+                logger.info(f"Returning message: {type(returned_message).__name__}")
+                logger.info(f"Returned message content: {truncate_at_base64(str(returned_message.content))}")
+                
+                # You can return updated messages either under `llm_input_messages` or 
+                # `messages` key (see the note below)
+                result = {"messages": [returned_message]}
+                logger.info(f"Pre-model hook result: {len(result['messages'])} message(s)")
+                return result
+            else:
+                logger.warning("No messages in state, returning empty messages list")
+                return {"messages": []}
+                
         # Construct the ReAct agent
-        self.graph = create_react_agent(model=self.llm, tools=dog_tools, prompt=self.prompt, debug=False)
+        self.graph = create_react_agent(
+            model=self.llm, 
+            tools=dog_tools, 
+            prompt=self.prompt, 
+#            pre_model_hook=pre_model_hook,
+            debug=True
+        )
 
 
     def stt(self, audio, language='en'):
@@ -126,14 +162,24 @@ class ModelHelper():
         except Exception as e:
             return str(value)
 
-    def dialogue_with_img(self, msg, img_path):
+    def dialogue_with_img(self, msg, img_path, timeout=60):
+        logger.info(f"=== Starting dialogue_with_img ===")
+        logger.info(f"Message: {msg}")
+        logger.info(f"Image path: {img_path}")
+        
+        start_time = time.time()
 
-        with open(img_path, "rb") as image_file:
-            image_data = base64.b64encode(image_file.read()).decode("utf-8")
+        try:
+            with open(img_path, "rb") as image_file:
+                image_data = base64.b64encode(image_file.read()).decode("utf-8")
+                logger.info(f"Image loaded and encoded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load image: {e}")
+            return f"Error loading image: {e}"
         
         message = HumanMessage(
                 content=[
-                    {"type": "text", "text": msg},
+                   {"type": "text", "text": msg},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
@@ -141,43 +187,80 @@ class ModelHelper():
                 ]
             )
         
+        logger.info(f"HumanMessage created successfully")
+        
         final_response = None
-        for s in self.graph.stream({"messages": [message]}, stream_mode="values"):
-            # Some events may not contain 'messages' (e.g., tool invocation)
-            if "messages" not in s or not s["messages"]:
-                print(s)  # debug fallback
-                continue
-
-            message = s["messages"][-1]
-            if isinstance(message, tuple):
-                print(message)
-            else:
-                # Handle different content formats
-                if hasattr(message, 'content'):
-                    if isinstance(message.content, list):
-                        # Content is a list of content blocks
-                        for content_block in message.content:
-                            if isinstance(content_block, dict) and content_block.get("type") == "text":
-                                print(content_block["text"])
-                            elif isinstance(content_block, list):
-                                print(content_block[0])
-                            elif isinstance(content_block, str):
-                                print(content_block)
-                    elif isinstance(message.content, str):
-                        # Content is a simple string
-                        print(message.content)
-                    else:
-                        print(str(message.content))
-                else:
-                    print(str(message))
+        step_count = 0
+        last_activity_time = time.time()
+        
+        try: 
+            logger.info("Starting LangGraph stream...")
             
-            final_response = s
+            # Create the stream
+            stream = self.graph.stream({"messages": [message]}, stream_mode="values")
+            
+            for s in stream:
+                step_count += 1
+                current_time = time.time()
+                elapsed = current_time - start_time
+                since_last_activity = current_time - last_activity_time
+                
+                logger.info(f"Step {step_count}: Elapsed {elapsed:.2f}s, Since last activity: {since_last_activity:.2f}s")
+                
+                # Check for timeout
+                if elapsed > timeout:
+                    logger.error(f"TIMEOUT: LangGraph execution exceeded {timeout} seconds")
+                    return f"Error: Execution timed out after {timeout} seconds"
+                
+                # Log the stream event
+                if isinstance(s, dict):
+                    logger.info(f"Stream event keys: {list(s.keys())}")
+                    
+                    # Check for messages
+                    if "messages" in s and s["messages"]:
+                        logger.info(f"Messages count: {len(s['messages'])}")
+                        for i, msg in enumerate(s["messages"]):
+                            logger.info(f"Message {i}: {type(msg).__name__}")
+                            if hasattr(msg, 'content'):
+                                content_preview = str(msg.content)[:200] + "..." if len(str(msg.content)) > 200 else str(msg.content)
+                                logger.info(f"Message {i} content preview: {content_preview}")
+                    
+                    # Check for tool calls
+                    if "tool_calls" in s:
+                        logger.info(f"Tool calls detected: {s['tool_calls']}")
+                        
+                else:
+                    logger.info(f"Stream event type: {type(s)}")
+                    logger.info(f"Stream event: {s}")
+                
+                # Update last activity time
+                last_activity_time = current_time
+                
+                # Some events may not contain 'messages' (e.g., tool invocation)
+                if "messages" not in s or not s["messages"]:
+                    logger.info("No messages in event, continuing...")
+                    continue
 
-        try:  
-            return ""
+                message = s["messages"][-1]
+                logger.info(f"Final message type: {type(message).__name__}")
+                logger.info(f"Final message: {truncate_at_base64(str(message))}")
+                final_response = message
+
         except Exception as e:
-            print(f"Error extracting response: {e}")
-            return ""
+            logger.error(f"Error during LangGraph stream: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return f"Error during execution: {e}"
+
+        total_time = time.time() - start_time
+        logger.info(f"=== Dialogue completed in {total_time:.2f}s with {step_count} steps ===")
+        
+        try:  
+            return final_response.content if final_response else "No response received"
+        except Exception as e:
+            logger.error(f"Error extracting response: {e}")
+            return f"Error extracting response: {e}"
 
 
     def text_to_speech(self, text, output_file, voice='alloy', response_format="mp3", speed=1):
@@ -229,12 +312,13 @@ def main():
 
     # assistant init
     # =================================================================
-    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash",  temperature=0,max_tokens=None, timeout=None, max_retries=2,google_api_key=GEMINI_API_KEY)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro",  temperature=0,max_tokens=None, timeout=None, max_retries=2,google_api_key=GEMINI_API_KEY)
     #llm = ChatDeepSeek(api_key=DEEPSEEK_API_KEY, model="deepseek-chat",)
     #llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini")
     model_helper = ModelHelper(llm, tools)
     img_path = camera_handler.capture_image()
-    model_helper.dialogue_with_img("Repeatedly wag the tail until you do not see a person. Give a high five when you see a person. Explain what you see", img_path)
+    model_helper.dialogue_with_img("Continously execute wag the tail until you see a person, describe every time what you see given the tool output", img_path)
+    print("done")
     return 0
 
 

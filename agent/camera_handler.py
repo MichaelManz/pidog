@@ -1,3 +1,4 @@
+import threading
 import cv2
 import time
 import base64
@@ -22,6 +23,7 @@ class CameraHandler:
         self.local_display = local_display
         self.web_display = web_display
         self.is_started = False
+        self._capture_lock = threading.Lock()
         
     def start(self):
         """Start the camera and display services."""
@@ -37,7 +39,7 @@ class CameraHandler:
                 break
             time.sleep(0.01)
         
-        time.sleep(0.5)
+        #time.sleep(0.5)
         self.is_started = True
         print('\nCamera started successfully')
         
@@ -53,8 +55,9 @@ class CameraHandler:
         """
         if not self.is_started:
             raise RuntimeError("Camera not started. Call start() first.")
-            
-        cv2.imwrite(save_path, Vilib.img)
+        with self._capture_lock: 
+            #resized = cv2.resize(Vilib.img, (400,400), cv2.INTER_AREA) 
+            cv2.imwrite(save_path, Vilib.img)
         return save_path
         
     def get_image_base64(self, save_path='./img_input.jpg'):

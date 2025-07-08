@@ -3,6 +3,11 @@ from action_flow import ActionFlow
 from typing import Union
 import re
 import time, random, threading
+from logging_config import setup_logging, get_logger, truncate_at_base64
+
+# Configure logging
+setup_logging()
+logger = get_logger(__name__)
 
 # Module-level thread management
 action_thread = None
@@ -58,7 +63,7 @@ def start_action_handler(action_flow: ActionFlow):
                 pass
             elif _state == 'actions':
                 with action_lock:
-                    _actions = actions_to_be_done
+                    _actions = actions_to_be_done.copy()
                 for _action in _actions:
                     try:
                         action_flow.run(_action)
@@ -101,25 +106,71 @@ class ActionFlowTool(BaseTool):
         # Start the background action handler thread
         start_action_handler(self.action_flow)
 
-    def _run(self, **kwargs) -> tuple[str, str]:
-        """Execute the underlying dog action and return a confirmation string."""
-        global actions_to_be_done, action_lock, camera_handler
-        with action_lock:
-            actions_to_be_done = [self.action]
-        set_action_state('actions')
+    def _run(self, query: str = "") -> list:
+        """Use the tool."""
+        logger.info(f"=== Tool Execution Started ===")
+        logger.info(f"Tool: {self.name}")
+        logger.info(f"Action: {self.action}")
+        logger.info(f"Query: {query}")
         
-        # Capture image using camera handler if available
-        msg = f"Executed dog action {self.action}"
-        if camera_handler and camera_handler.is_started:
-            try:
-                img_path = camera_handler.capture_image()
-                image_data = camera_handler.get_image_base64(img_path)
-                return msg, {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
-                    }
-            except Exception as e:
-                print(f"Camera capture error: {e}")
-                return f"{msg} (camera capture failed)"
-        else:
-            return f"{msg} (no camera available)"
+        start_time = time.time()
+        
+        try:
+            # Change action state to 'think'
+            logger.info("Setting action state to 'think'")
+            set_action_state('think')
+            
+            # Execute the action
+            logger.info(f"Executing action: {self.action}")
+            result = self.action_flow.run(self.action)
+            
+            execution_time = time.time() - start_time
+            logger.info(f"Action completed in {execution_time:.2f}s")
+            
+            # Capture image if camera is available
+            if camera_handler:
+                logger.info("Capturing image after action...")
+                try:
+                    image_data = camera_handler.get_image_base64()
+                    logger.info(f"Image captured successfully")
+
+                    msg = f"Action '{self.action}' completed successfully"
+                    # Get image description or status
+                    result_msg = [
+                        {"type": "text", "text": f"{msg}"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                        }
+                    ]
+                    
+                except Exception as e:
+                    logger.error(f"Error capturing image: {e}")
+                    result_msg = [f"Action '{self.action}' completed successfully, but failed to capture image: {e}"]
+            else:
+                logger.info("No camera handler available")
+                result_msg = [f"Action '{self.action}' completed successfully (no camera available)"]
+            
+            logger.info(truncate_at_base64(f"Tool result: {result_msg}"))
+            
+            # Reset action state
+            logger.info("Setting action state to 'standby'")
+            set_action_state('standby')
+            
+            total_time = time.time() - start_time
+            logger.info(f"=== Tool Execution Completed in {total_time:.2f}s ===")
+            
+            return result_msg
+            
+        except Exception as e:
+            error_time = time.time() - start_time
+            logger.error(f"=== Tool Execution Failed after {error_time:.2f}s ===")
+            logger.error(f"Error in tool {self.name}: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Reset action state on error
+            set_action_state('standby')
+            
+            return [f"Error executing action '{self.action}': {e}"]
