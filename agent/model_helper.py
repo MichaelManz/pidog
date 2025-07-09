@@ -52,7 +52,12 @@ class ModelHelper():
         self.llm = llm
         
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a mechanical dog with powerful AI capabilities, similar to JARVIS from Iron Man. Your name is Pidog. You can have conversations with people and perform actions based on the context of the conversation. You have access to visual input with a camera."),
+            ("system", 
+             """You are a mechanical dog with powerful AI capabilities, similar to JARVIS from Iron Man. 
+Your name is Pidog. 
+You can have conversations with people and perform actions based on the context of the conversation. You can run multiple actions at the same time.
+You have access to visual input with a camera as the dog's eyes, and you will receive an updated image of your environment with each tool call."""
+            ),
             ("placeholder", "{messages}"),
             ("user", ""),
         ])
@@ -91,7 +96,7 @@ class ModelHelper():
             tools=dog_tools, 
             prompt=self.prompt, 
 #            pre_model_hook=pre_model_hook,
-            debug=True
+            debug=False
         )
 
 
@@ -165,14 +170,14 @@ class ModelHelper():
     def dialogue_with_img(self, msg, img_path, timeout=60):
         logger.info(f"=== Starting dialogue_with_img ===")
         logger.info(f"Message: {msg}")
-        logger.info(f"Image path: {img_path}")
+        logger.debug(f"Image path: {img_path}")
         
         start_time = time.time()
 
         try:
             with open(img_path, "rb") as image_file:
                 image_data = base64.b64encode(image_file.read()).decode("utf-8")
-                logger.info(f"Image loaded and encoded successfully")
+                logger.debug(f"Image loaded and encoded successfully")
         except Exception as e:
             logger.error(f"Failed to load image: {e}")
             return f"Error loading image: {e}"
@@ -180,21 +185,21 @@ class ModelHelper():
         message = HumanMessage(
                 content=[
                    {"type": "text", "text": msg},
-                    {
+                   {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
-                    },
+                   },
                 ]
             )
         
-        logger.info(f"HumanMessage created successfully")
+        logger.debug(f"HumanMessage created successfully")
         
         final_response = None
         step_count = 0
         last_activity_time = time.time()
         
         try: 
-            logger.info("Starting LangGraph stream...")
+            logger.debug("Starting LangGraph stream...")
             
             # Create the stream
             stream = self.graph.stream({"messages": [message]}, stream_mode="values")
@@ -214,24 +219,26 @@ class ModelHelper():
                 
                 # Log the stream event
                 if isinstance(s, dict):
-                    logger.info(f"Stream event keys: {list(s.keys())}")
+                    logger.debug(f"Stream event keys: {list(s.keys())}")
                     
                     # Check for messages
                     if "messages" in s and s["messages"]:
-                        logger.info(f"Messages count: {len(s['messages'])}")
+                        logger.debug(f"Messages count: {len(s['messages'])}")
                         for i, msg in enumerate(s["messages"]):
-                            logger.info(f"Message {i}: {type(msg).__name__}")
+                            logger.debug(f"Message {i}: {type(msg).__name__}")
                             if hasattr(msg, 'content'):
                                 content_preview = str(msg.content)[:200] + "..." if len(str(msg.content)) > 200 else str(msg.content)
-                                logger.info(f"Message {i} content preview: {content_preview}")
-                    
+                                logger.debug(f"Message {i} content preview: {content_preview}")
+                            else:
+                                logger.debug(f"Message {i} content: {truncate_at_base64(str(message))}")
+
                     # Check for tool calls
                     if "tool_calls" in s:
-                        logger.info(f"Tool calls detected: {s['tool_calls']}")
+                        logger.debug(f"Tool calls detected: {s['tool_calls']}")
                         
                 else:
-                    logger.info(f"Stream event type: {type(s)}")
-                    logger.info(f"Stream event: {s}")
+                    logger.debug(f"Stream event type: {type(s)}")
+                    logger.debug(f"Stream event: {s}")
                 
                 # Update last activity time
                 last_activity_time = current_time
@@ -242,8 +249,7 @@ class ModelHelper():
                     continue
 
                 message = s["messages"][-1]
-                logger.info(f"Final message type: {type(message).__name__}")
-                logger.info(f"Final message: {truncate_at_base64(str(message))}")
+                logger.info(f"Most recent message {type(message).__name__}: {truncate_at_base64(message.pretty_repr())}")
                 final_response = message
 
         except Exception as e:
@@ -282,46 +288,3 @@ class ModelHelper():
         except Exception as e:
             print(f'tts err: {e}')
             return False
-
-def main():
-            
-    """ Main program """
-    from action_flow_tool import ActionFlowTool
-    from model_helper import ModelHelper
-    from keys import OPENAI_API_KEY, OPENAI_ASSISTANT_ID, GEMINI_API_KEY
-    from action_flow import ActionFlow
-    from pidog import Pidog
-    from pydantic import BaseModel, Field
-
-    # dog init 
-    # =================================================================
-    try:
-        #my_dog = Pidog()
-        my_dog = None
-        time.sleep(1)
-    except Exception as e:
-        raise RuntimeError(e)
-    
-    camera_handler = CameraHandler()
-    set_camera_handler(camera_handler)  # Set global camera handler
-    camera_handler.start()
-
-    action_flow = ActionFlow(my_dog)
-
-    tools = [ActionFlowTool(action_flow, action) for action in action_flow.OPERATIONS]
-
-    # assistant init
-    # =================================================================
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro",  temperature=0,max_tokens=None, timeout=None, max_retries=2,google_api_key=GEMINI_API_KEY)
-    #llm = ChatDeepSeek(api_key=DEEPSEEK_API_KEY, model="deepseek-chat",)
-    #llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini")
-    model_helper = ModelHelper(llm, tools)
-    img_path = camera_handler.capture_image()
-    model_helper.dialogue_with_img("Continously execute wag the tail until you see a person, describe every time what you see given the tool output", img_path)
-    print("done")
-    return 0
-
-
-
-if __name__ == "__main__":
-    main()

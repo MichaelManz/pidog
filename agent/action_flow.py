@@ -33,8 +33,6 @@ class ActionFlow():
             "function": lambda self: self.dog_obj.do_action('turn_right', speed=98),
             "status": STATUS_STAND,
         },
-        "stop": {
-        },
         "lie": {
             "function": lambda self: self.dog_obj.do_action('lie', speed=70),
             "status": STATUS_LIE,

@@ -42,7 +42,8 @@ def start_action_handler(action_flow: ActionFlow):
         standby_actions = ['waiting', 'feet_left_right']
         standby_weights = [1, 0.3]
         
-        action_interval = 5  # seconds
+        max_action_interval = 50  # seconds
+        action_interval = max_action_interval  # seconds
         last_action_time = time.time()
         
         while True:
@@ -56,7 +57,7 @@ def start_action_handler(action_flow: ActionFlow):
                     except Exception as e:
                         print(f'standby action error: {e}')
                     last_action_time = time.time()
-                    action_interval = random.randint(2, 6)
+                    action_interval = random.randint(2, max_action_interval)
             elif _state == 'think':
                 # action_flow.run('think')
                 # last_action_time = time.time()
@@ -108,31 +109,31 @@ class ActionFlowTool(BaseTool):
 
     def _run(self, query: str = "") -> list:
         """Use the tool."""
-        logger.info(f"=== Tool Execution Started ===")
-        logger.info(f"Tool: {self.name}")
-        logger.info(f"Action: {self.action}")
-        logger.info(f"Query: {query}")
+        logger.debug(f"=== Tool Execution Started ===")
+        logger.debug(f"Tool: {self.name}")
+        logger.debug(f"Action: {self.action}")
+        logger.debug(f"Query: {query}")
         
         start_time = time.time()
         
         try:
             # Change action state to 'think'
-            logger.info("Setting action state to 'think'")
+            logger.debug("Setting action state to 'think'")
             set_action_state('think')
             
             # Execute the action
-            logger.info(f"Executing action: {self.action}")
+            logger.debug(f"Executing action: {self.action}")
             result = self.action_flow.run(self.action)
             
             execution_time = time.time() - start_time
-            logger.info(f"Action completed in {execution_time:.2f}s")
+            logger.debug(f"Action completed in {execution_time:.2f}s")
             
             # Capture image if camera is available
             if camera_handler:
-                logger.info("Capturing image after action...")
+                logger.debug("Capturing image after action...")
                 try:
                     image_data = camera_handler.get_image_base64()
-                    logger.info(f"Image captured successfully")
+                    logger.debug(f"Image captured successfully")
 
                     msg = f"Action '{self.action}' completed successfully"
                     # Get image description or status
@@ -151,14 +152,14 @@ class ActionFlowTool(BaseTool):
                 logger.info("No camera handler available")
                 result_msg = [f"Action '{self.action}' completed successfully (no camera available)"]
             
-            logger.info(truncate_at_base64(f"Tool result: {result_msg}"))
+            logger.debug(truncate_at_base64(f"Tool result: {result_msg}"))
             
             # Reset action state
-            logger.info("Setting action state to 'standby'")
+            logger.debug("Setting action state to 'standby'")
             set_action_state('standby')
             
             total_time = time.time() - start_time
-            logger.info(f"=== Tool Execution Completed in {total_time:.2f}s ===")
+            logger.debug(f"=== Tool Execution Completed in {total_time:.2f}s ===")
             
             return result_msg
             

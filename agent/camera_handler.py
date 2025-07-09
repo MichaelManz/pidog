@@ -56,7 +56,7 @@ class CameraHandler:
         if not self.is_started:
             raise RuntimeError("Camera not started. Call start() first.")
         with self._capture_lock: 
-            #resized = cv2.resize(Vilib.img, (400,400), cv2.INTER_AREA) 
+            resized = cv2.resize(Vilib.img, (400,400), cv2.INTER_AREA) 
             cv2.imwrite(save_path, Vilib.img)
         return save_path
         

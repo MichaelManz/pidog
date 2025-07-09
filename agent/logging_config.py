@@ -20,12 +20,12 @@ def truncate_at_base64(text, max_length=500):
         return text[:max_length] + "..."
     return text
 
-def setup_logging(log_level=logging.DEBUG, log_file=None, console_output=True):
+def setup_logging(log_level=logging.INFO, log_file=None, console_output=True):
     """
     Set up logging configuration with noise reduction.
     
     Args:
-        log_level: Base logging level (default: DEBUG)
+        log_level: Base logging level (default: INFO)
         log_file: Optional log file path
         console_output: Whether to output to console (default: True)
     """
